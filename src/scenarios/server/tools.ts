@@ -5,9 +5,11 @@
 import {
   ClientScenario,
   ConformanceCheck,
-  DRAFT_PROTOCOL_VERSION
+  DRAFT_PROTOCOL_VERSION,
+  specVersionAtLeast
 } from '../../types';
 import type { RunContext } from '../../connection';
+import { notTestable, untestableCheck } from '../untestable';
 import type {
   ListToolsResult,
   CallToolResult
@@ -98,6 +100,136 @@ export function buildToolsNameFormatCheck(
   };
 }
 
+export const TOOLS_LIST_ORDER_CHECK_ID = 'tools-list-deterministic-order';
+
+/** The revision that introduced the deterministic-order SHOULD. A published, dated revision, so written as a literal. */
+export const TOOLS_LIST_ORDER_INTRODUCED_IN = '2026-07-28' as const;
+
+/** How many consecutive tools/list snapshots the ordering check compares. */
+const TOOLS_LIST_ORDER_PROBES = 3;
+
+const TOOLS_LIST_ORDER_SPEC_REFS = [
+  {
+    id: 'MCP-Tools-Deterministic-Order',
+    url: 'https://modelcontextprotocol.io/specification/2026-07-28/server/tools#capabilities'
+  }
+];
+
+/**
+ * Build the tools-list-deterministic-order check from consecutive tools/list
+ * snapshots.
+ *
+ * 2026-07-28 server/tools.mdx: "Servers SHOULD return tools in a deterministic
+ * order (i.e., the same ordering across requests when the underlying set of
+ * tools has not changed)." SHOULD, so a violation is WARNING.
+ *
+ * The spec scopes the SHOULD to an unchanged set, so a set that differs
+ * between probes is reported as untestable (issue #248) rather than as a
+ * violation: from the outside, a sample cannot tell a nondeterministic server
+ * from one whose tools legitimately changed between two requests.
+ */
+export function buildToolsListDeterministicOrderCheck(
+  snapshots: ReadonlyArray<ReadonlyArray<{ name?: unknown }> | undefined>
+): ConformanceCheck {
+  const timestamp = new Date().toISOString();
+  const baseCheck = {
+    id: TOOLS_LIST_ORDER_CHECK_ID,
+    name: 'ToolsListDeterministicOrder',
+    description:
+      'Consecutive tools/list requests return the same tools in the same order',
+    specReferences: TOOLS_LIST_ORDER_SPEC_REFS,
+    source: { introducedIn: TOOLS_LIST_ORDER_INTRODUCED_IN },
+    timestamp
+  };
+  const untestable = (reason: string): ConformanceCheck => ({
+    ...baseCheck,
+    status: 'WARNING',
+    errorMessage: notTestable(reason),
+    details: { untestable: true, reason, probes: snapshots.length }
+  });
+
+  if (snapshots.length < 2) {
+    return untestable(
+      `needs at least two tools/list snapshots to compare, got ${snapshots.length}`
+    );
+  }
+  const missing = snapshots.findIndex((tools) => !Array.isArray(tools));
+  if (missing !== -1) {
+    return untestable(
+      `tools/list probe ${missing + 1} did not return a tools array`
+    );
+  }
+
+  // A position-independent placeholder, so that a nameless tool moving
+  // around reads as an order change rather than as a set change.
+  const orders = snapshots.map((tools) =>
+    (tools as ReadonlyArray<{ name?: unknown }>).map((tool) =>
+      typeof tool.name === 'string' ? tool.name : '<tool missing name>'
+    )
+  );
+
+  // Nothing to order when no probe saw two tools.
+  if (orders.every((order) => order.length < 2)) {
+    return {
+      ...baseCheck,
+      status: 'INFO',
+      errorMessage: `${orders[0].length} tool(s) advertised; nothing to compare`,
+      details: { toolCount: orders[0].length, probes: orders.length, orders }
+    };
+  }
+
+  // The SHOULD only binds while the set is unchanged: compare multisets first.
+  const countNames = (names: string[]): Map<string, number> => {
+    const counts = new Map<string, number>();
+    for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1);
+    return counts;
+  };
+  const baseline = countNames(orders[0]);
+  for (let probe = 1; probe < orders.length; probe++) {
+    const current = countNames(orders[probe]);
+    const added: string[] = [];
+    const removed: string[] = [];
+    for (const [name, count] of current) {
+      const before = baseline.get(name) ?? 0;
+      if (count > before) added.push(name);
+    }
+    for (const [name, count] of baseline) {
+      const now = current.get(name) ?? 0;
+      if (count > now) removed.push(name);
+    }
+    if (added.length > 0 || removed.length > 0) {
+      return untestable(
+        `the set of tools changed between tools/list probe 1 and probe ${probe + 1} ` +
+          `(added: ${added.join(', ') || 'none'}; removed: ${removed.join(', ') || 'none'}), ` +
+          'so the deterministic-order SHOULD does not apply to this sample'
+      );
+    }
+  }
+
+  const toolCount = orders[0].length;
+
+  for (let probe = 1; probe < orders.length; probe++) {
+    const index = orders[probe].findIndex((name, i) => name !== orders[0][i]);
+    if (index !== -1) {
+      return {
+        ...baseCheck,
+        status: 'WARNING',
+        errorMessage:
+          `tools/list returned the same ${toolCount} tools in a different order across ` +
+          `consecutive requests: probe ${probe + 1} diverges from probe 1 at index ${index} ` +
+          `(${orders[0][index]} vs ${orders[probe][index]})`,
+        details: { toolCount, probes: orders.length, orders }
+      };
+    }
+  }
+
+  return {
+    ...baseCheck,
+    status: 'SUCCESS',
+    details: { toolCount, probes: orders.length, orders }
+  };
+}
+
 export class ToolsListScenario implements ClientScenario {
   name = 'tools-list';
   readonly source = { introducedIn: '2025-06-18' } as const;
@@ -112,7 +244,9 @@ export class ToolsListScenario implements ClientScenario {
 - Each tool MUST have:
   - \`name\` (string, 1-64 chars, matching \`^[A-Za-z0-9_./-]+$\`)
   - \`description\` (string)
-  - \`inputSchema\` (valid JSON Schema object)`;
+  - \`inputSchema\` (valid JSON Schema object)
+- From 2026-07-28: return tools in a deterministic order across requests
+  when the set of tools has not changed (SHOULD)`;
 
   async run(ctx: RunContext): Promise<ConformanceCheck[]> {
     const checks: ConformanceCheck[] = [];
@@ -162,6 +296,38 @@ export class ToolsListScenario implements ClientScenario {
       // Validate tool name format per SEP-986:
       // names MUST be 1-64 chars matching ^[A-Za-z0-9_./-]+$
       checks.push(buildToolsNameFormatCheck(result.tools));
+
+      // 2026-07-28: tools SHOULD come back in a deterministic order across
+      // requests. Take two more consecutive tools/list snapshots and compare.
+      if (specVersionAtLeast(ctx.specVersion, TOOLS_LIST_ORDER_INTRODUCED_IN)) {
+        const snapshots: Array<ListToolsResult['tools'] | undefined> = [
+          result.tools
+        ];
+        let probeError: unknown;
+        try {
+          while (snapshots.length < TOOLS_LIST_ORDER_PROBES) {
+            const again = await conn.request<ListToolsResult>('tools/list');
+            snapshots.push(again.tools);
+          }
+        } catch (error) {
+          probeError = error;
+        }
+        checks.push(
+          probeError === undefined
+            ? buildToolsListDeterministicOrderCheck(snapshots)
+            : {
+                ...untestableCheck(
+                  TOOLS_LIST_ORDER_CHECK_ID,
+                  'ToolsListDeterministicOrder',
+                  'Consecutive tools/list requests return the same tools in the same order',
+                  `repeated tools/list request failed: ${probeError instanceof Error ? probeError.message : String(probeError)}`,
+                  TOOLS_LIST_ORDER_SPEC_REFS,
+                  'WARNING'
+                ),
+                source: { introducedIn: TOOLS_LIST_ORDER_INTRODUCED_IN }
+              }
+        );
+      }
 
       await conn.close();
     } catch (error) {
