@@ -254,6 +254,41 @@ describe('Server scenario negative tests', () => {
     }, 10000);
   });
 
+  describe('tools-name-format', () => {
+    let serverProcess: ChildProcess | null = null;
+    const PORT = 3009;
+
+    beforeAll(async () => {
+      serverProcess = await startServer(
+        path.join(
+          process.cwd(),
+          'examples/servers/typescript/invalid-tool-names.ts'
+        ),
+        PORT
+      );
+    }, 35000);
+
+    afterAll(async () => {
+      await stopServer(serverProcess);
+    });
+
+    it('emits WARNING for tools-name-format against a server advertising invalid tool names', async () => {
+      const scenario = new ToolsListScenario();
+      const checks = await scenario.run(
+        testContext(`http://localhost:${PORT}/mcp`, '2025-11-25')
+      );
+
+      const formatCheck = checks.find((c) => c.id === 'tools-name-format');
+      expect(formatCheck?.status).toBe('WARNING');
+      expect(formatCheck?.errorMessage).toContain('bad tool name');
+      expect(formatCheck?.details).toMatchObject({
+        results: expect.objectContaining({
+          'bad tool name': expect.stringMatching(/invalid:/)
+        })
+      });
+    }, 10000);
+  });
+
   describe('sep2106KeywordCheckStatus (soft version gate)', () => {
     it('passes preserved keywords at any target version', () => {
       expect(sep2106KeywordCheckStatus(true, DRAFT_PROTOCOL_VERSION)).toBe(

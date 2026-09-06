@@ -6,7 +6,8 @@ import {
   ClientScenario,
   ConformanceCheck,
   DRAFT_PROTOCOL_VERSION,
-  specVersionAtLeast
+  specVersionAtLeast,
+  type SpecVersion
 } from '../../types';
 import type { RunContext } from '../../connection';
 import { notTestable, untestableCheck } from '../untestable';
@@ -23,26 +24,45 @@ import {
   ElicitRequestSchema
 } from '@modelcontextprotocol/sdk/types.js';
 
-const TOOL_NAME_PATTERN = /^[A-Za-z0-9_./-]+$/;
-const TOOL_NAME_MAX_LENGTH = 64;
+/**
+ * Tool name rules per the 2025-11-25 spec prose (#tool-names): 1–128 chars of
+ * [A-Za-z0-9_.-]. (The SEP-986 markdown still shows the older 64-char / `/`
+ * rules; the published spec is authoritative.)
+ */
+const TOOL_NAME_PATTERN = /^[A-Za-z0-9_.-]+$/;
+const TOOL_NAME_MAX_LENGTH = 128;
 
 const TOOLS_NAME_FORMAT_SPEC_REFS = [
   {
-    id: 'MCP-Tools-List',
-    url: 'https://modelcontextprotocol.io/specification/2025-11-25/server/tools#listing-tools'
+    id: 'MCP-Tool-Names',
+    url: 'https://modelcontextprotocol.io/specification/2025-11-25/server/tools#tool-names'
   },
   {
-    id: 'SEP-986',
-    url: 'https://modelcontextprotocol.io/specification/2025-11-25/server/tools#tool-names'
+    id: 'MCP-Tool-Names-Draft',
+    url: 'https://modelcontextprotocol.io/specification/draft/server/tools#tool-names'
+  },
+  // Background only; the dated spec above is the rule source.
+  {
+    id: 'SEP-986-History',
+    url: 'https://github.com/modelcontextprotocol/modelcontextprotocol/issues/986'
+  },
+  {
+    id: 'SEP-986-Spec-Integration',
+    url: 'https://github.com/modelcontextprotocol/modelcontextprotocol/pull/1603'
   }
 ];
+
+/** The Tool Names rules first appear in the 2025-11-25 revision. */
+export function toolNameFormatCheckApplies(specVersion: SpecVersion): boolean {
+  return specVersionAtLeast(specVersion, '2025-11-25');
+}
 
 export function validateToolNameFormat(name: string): string | null {
   if (name.length < 1 || name.length > TOOL_NAME_MAX_LENGTH) {
     return `length ${name.length} is outside 1-${TOOL_NAME_MAX_LENGTH}`;
   }
   if (!TOOL_NAME_PATTERN.test(name)) {
-    return 'contains characters outside [A-Za-z0-9_./-]';
+    return 'contains characters outside [A-Za-z0-9_.-]';
   }
   return null;
 }
@@ -54,7 +74,8 @@ export function buildToolsNameFormatCheck(
   const baseCheck = {
     id: 'tools-name-format',
     name: 'ToolsNameFormat',
-    description: 'Tool names are 1-64 characters and match ^[A-Za-z0-9_./-]+$',
+    description:
+      'Tool names SHOULD be 1-128 characters and match ^[A-Za-z0-9_.-]+$',
     specReferences: TOOLS_NAME_FORMAT_SPEC_REFS,
     timestamp
   };
@@ -88,10 +109,10 @@ export function buildToolsNameFormatCheck(
 
   return {
     ...baseCheck,
-    status: violations.length === 0 ? 'SUCCESS' : 'FAILURE',
+    status: violations.length === 0 ? 'SUCCESS' : 'WARNING',
     errorMessage:
       violations.length > 0
-        ? `${violations.length} tool name(s) violate SEP-986 format: ${violations.join('; ')}`
+        ? `${violations.length} tool name(s) violate spec Tool Names SHOULD rules: ${violations.join('; ')}`
         : undefined,
     details: {
       toolCount: tools.length,
@@ -237,9 +258,10 @@ export class ToolsListScenario implements ClientScenario {
 **Requirements**:
 - Return array of all available tools
 - Each tool MUST have:
-  - \`name\` (string, 1-64 chars, matching \`^[A-Za-z0-9_./-]+$\`)
+  - \`name\` (string)
   - \`description\` (string)
   - \`inputSchema\` (valid JSON Schema object)
+- From 2025-11-25 onward, advertised \`name\` values SHOULD follow the spec Tool Names rules (1–128 chars, \`[A-Za-z0-9_.-]\` only) — see \`tools-name-format\` check
 - From 2026-07-28: return tools in a deterministic order across requests
   when the set of tools has not changed (SHOULD)`;
 
@@ -288,9 +310,9 @@ export class ToolsListScenario implements ClientScenario {
         }
       });
 
-      // Validate tool name format per SEP-986:
-      // names MUST be 1-64 chars matching ^[A-Za-z0-9_./-]+$
-      checks.push(buildToolsNameFormatCheck(result.tools));
+      if (toolNameFormatCheckApplies(ctx.specVersion)) {
+        checks.push(buildToolsNameFormatCheck(result.tools));
+      }
 
       // 2026-07-28: tools SHOULD come back in a deterministic order across
       // requests. Take two more consecutive tools/list snapshots and compare.
