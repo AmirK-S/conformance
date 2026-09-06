@@ -100,11 +100,6 @@ export function buildToolsNameFormatCheck(
   };
 }
 
-export const TOOLS_LIST_ORDER_CHECK_ID = 'tools-list-deterministic-order';
-
-/** The revision that introduced the deterministic-order SHOULD. A published, dated revision, so written as a literal. */
-export const TOOLS_LIST_ORDER_INTRODUCED_IN = '2026-07-28' as const;
-
 /** How many consecutive tools/list snapshots the ordering check compares. */
 const TOOLS_LIST_ORDER_PROBES = 3;
 
@@ -133,12 +128,12 @@ export function buildToolsListDeterministicOrderCheck(
 ): ConformanceCheck {
   const timestamp = new Date().toISOString();
   const baseCheck = {
-    id: TOOLS_LIST_ORDER_CHECK_ID,
+    id: 'tools-list-deterministic-order',
     name: 'ToolsListDeterministicOrder',
     description:
       'Consecutive tools/list requests return the same tools in the same order',
     specReferences: TOOLS_LIST_ORDER_SPEC_REFS,
-    source: { introducedIn: TOOLS_LIST_ORDER_INTRODUCED_IN },
+    source: { introducedIn: '2026-07-28' as const },
     timestamp
   };
   const untestable = (reason: string): ConformanceCheck => ({
@@ -299,7 +294,7 @@ export class ToolsListScenario implements ClientScenario {
 
       // 2026-07-28: tools SHOULD come back in a deterministic order across
       // requests. Take two more consecutive tools/list snapshots and compare.
-      if (specVersionAtLeast(ctx.specVersion, TOOLS_LIST_ORDER_INTRODUCED_IN)) {
+      if (specVersionAtLeast(ctx.specVersion, '2026-07-28')) {
         const snapshots: Array<ListToolsResult['tools'] | undefined> = [
           result.tools
         ];
@@ -317,14 +312,14 @@ export class ToolsListScenario implements ClientScenario {
             ? buildToolsListDeterministicOrderCheck(snapshots)
             : {
                 ...untestableCheck(
-                  TOOLS_LIST_ORDER_CHECK_ID,
+                  'tools-list-deterministic-order',
                   'ToolsListDeterministicOrder',
                   'Consecutive tools/list requests return the same tools in the same order',
                   `repeated tools/list request failed: ${probeError instanceof Error ? probeError.message : String(probeError)}`,
                   TOOLS_LIST_ORDER_SPEC_REFS,
                   'WARNING'
                 ),
-                source: { introducedIn: TOOLS_LIST_ORDER_INTRODUCED_IN }
+                source: { introducedIn: '2026-07-28' }
               }
         );
       }
